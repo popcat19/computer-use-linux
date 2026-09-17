@@ -64,10 +64,27 @@ mcp_servers:
     connect_timeout: 30
 ```
 
-The package downloads the matching Linux x86_64 or aarch64 binary from the
+The npm tarball downloads the matching Linux x86_64 or aarch64 binary from the
 GitHub release for this package version and verifies the `.sha256` asset before
 installing it. It also installs the matching `computer-use-linux-cosmic` helper
 used for COSMIC desktop window targeting.
+
+Git checkouts containing `Cargo.toml` instead build both binaries from the
+checked-out source with `cargo build --release --locked --bins` during postinstall.
+A Rust toolchain and native build prerequisites are required on `PATH`.
+Build failures stop installation without falling back to an upstream release.
+This also applies when Pi updates the checkout and reruns npm install.
+
+Install the personal fork globally in Pi with:
+
+```bash
+pi install git:github.com/PopCat19/computer-use-linux
+```
+
+The existing `COMPUTER_USE_LINUX_LOCAL_BINARY` and
+`COMPUTER_USE_LINUX_SKIP_DOWNLOAD=1` install overrides still take precedence.
+Leave these unset to build the checkout; leave `COMPUTER_USE_LINUX_BIN` unset
+to run the packaged source-built binary.
 
 When installed through Pi, the package supplies native, dynamically loaded
 `computer_use_linux_*` tools. No separate MCP adapter or manual MCP

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 
+const { execFileSync } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const https = require('node:https');
@@ -32,6 +33,29 @@ function copyLocalBinary(source) {
     fs.chmodSync(cosmicHelperPath, 0o755);
   }
   console.log(`[computer-use-linux] installed local binary from ${source}`);
+}
+
+function buildFromSource(root) {
+  console.log('[computer-use-linux] building checked-out Rust source (no release download)');
+  const output = execFileSync('cargo', [
+    'build', '--release', '--locked', '--bins', '--message-format=json',
+  ], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], maxBuffer: 16 * 1024 * 1024 });
+  const artifacts = new Map(output.trim().split('\n').filter(Boolean).map((line) => {
+    const message = JSON.parse(line);
+    return message.reason === 'compiler-artifact' && message.executable
+      ? [message.target.name, message.executable] : [];
+  }).filter((entry) => entry.length));
+  const binary = artifacts.get('computer-use-linux');
+  const helper = artifacts.get('computer-use-linux-cosmic');
+  if (!binary || !helper) {
+    throw new Error('cargo did not report both native executables');
+  }
+  fs.mkdirSync(binDir, { recursive: true });
+  for (const [source, destination] of [[binary, binaryPath], [helper, cosmicHelperPath]]) {
+    fs.copyFileSync(source, destination);
+    fs.chmodSync(destination, 0o755);
+  }
+  console.log(`[computer-use-linux] installed source-built binary from ${binary}`);
 }
 
 function download(url, destination, redirects = 5) {
@@ -96,6 +120,13 @@ async function main() {
   const targetArch = archToTarget[process.arch];
   if (!targetArch) {
     fail(`unsupported CPU architecture: ${process.arch}. Supported: x64, arm64.`);
+  }
+
+  // Git installs must run their checkout, not the same-version upstream release.
+  const root = path.join(__dirname, '..');
+  if (fs.existsSync(path.join(root, 'Cargo.toml'))) {
+    buildFromSource(root);
+    return;
   }
 
   const asset = `computer-use-linux-${targetArch}-unknown-linux-gnu`;

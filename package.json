@@ -56,6 +56,7 @@
     "pack:check": "node scripts/check_npm_package.mjs",
     "test:pi": "npm test --prefix pi",
     "typecheck:pi": "npm run typecheck --prefix pi",
+    "test:installer": "node --test npm/install.test.cjs",
     "test:wrapper": "node npm/bin/computer-use-linux.js --help"
   },
   "engines": {

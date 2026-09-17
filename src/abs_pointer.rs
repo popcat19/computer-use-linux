@@ -141,20 +141,62 @@ impl AbsPointer {
         end: (i32, i32),
         button: PointerButton,
     ) -> Result<()> {
-        let code = button.key_code();
-        // Drag currently reports backend success only; retain the landing
-        // values explicitly so their intentional omission stays visible.
-        let _start_landing = self.move_to(start.0, start.1)?;
-        sleep(Duration::from_millis(30));
-        self.device
-            .emit(&[InputEvent::new_now(EventType::KEY.0, code, 1)])?;
-        sleep(Duration::from_millis(40));
-        let _end_landing = self.move_to(end.0, end.1)?;
-        sleep(Duration::from_millis(40));
-        self.device
-            .emit(&[InputEvent::new_now(EventType::KEY.0, code, 0)])?;
-        Ok(())
+        let start = self.geometry.clamp_coordinates(start.0, start.1);
+        let end = self.geometry.clamp_coordinates(end.0, end.1);
+        run_drag(start, end, button, |action| match action {
+            DragAction::Move(x, y) => self.move_to(x, y).map(|_| ()),
+            DragAction::Button(code, value) => self
+                .device
+                .emit(&[InputEvent::new_now(EventType::KEY.0, code, value)])
+                .context("failed to emit drag button"),
+            DragAction::Wait(duration) => {
+                sleep(duration);
+                Ok(())
+            }
+        })
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum DragAction {
+    Move(i32, i32),
+    Button(u16, i32),
+    Wait(Duration),
+}
+
+fn run_drag(
+    start: (i32, i32),
+    end: (i32, i32),
+    button: PointerButton,
+    mut perform: impl FnMut(DragAction) -> Result<()>,
+) -> Result<()> {
+    // This pacing and interpolation together worked on Hyprland/Excalidraw;
+    // the diagnostic did not isolate timing from intermediate motion.
+    const SETTLE: Duration = Duration::from_millis(150);
+    const STEP_DELAY: Duration = Duration::from_millis(25);
+    const STEPS: i64 = 20;
+
+    perform(DragAction::Move(start.0, start.1))?;
+    perform(DragAction::Wait(SETTLE))?;
+    let code = button.key_code();
+    perform(DragAction::Button(code, 1))?;
+    let motion = (|| {
+        perform(DragAction::Wait(SETTLE))?;
+        for step in 1..=STEPS {
+            let interpolate = |from: i32, to: i32| {
+                (i64::from(from) + (i64::from(to) - i64::from(from)) * step / STEPS) as i32
+            };
+            perform(DragAction::Move(
+                interpolate(start.0, end.0),
+                interpolate(start.1, end.1),
+            ))?;
+            perform(DragAction::Wait(STEP_DELAY))?;
+        }
+        perform(DragAction::Wait(SETTLE))
+    })();
+    // A failed motion must still attempt release so the button is not left held.
+    let release = perform(DragAction::Button(code, 0));
+    motion.and(release)
 }
 
 /// Pointer buttons we can synthesize.
@@ -186,7 +228,111 @@ impl PointerButton {
 
 #[cfg(test)]
 mod tests {
-    use super::{AbsPointerGeometry, PointerButton};
+    use super::{run_drag, AbsPointerGeometry, DragAction, PointerButton};
+    use std::time::Duration;
+
+    #[test]
+    fn drag_paces_motion_between_press_and_release_for_every_button() {
+        for button in [
+            PointerButton::Left,
+            PointerButton::Right,
+            PointerButton::Middle,
+        ] {
+            let mut actions = Vec::new();
+            run_drag((100, 200), (500, 600), button, |action| {
+                actions.push(action);
+                Ok(())
+            })
+            .unwrap();
+            let mut expected = vec![
+                DragAction::Move(100, 200),
+                DragAction::Wait(Duration::from_millis(150)),
+                DragAction::Button(button.key_code(), 1),
+                DragAction::Wait(Duration::from_millis(150)),
+            ];
+            for step in 1..=20 {
+                expected.push(DragAction::Move(100 + 20 * step, 200 + 20 * step));
+                expected.push(DragAction::Wait(Duration::from_millis(25)));
+            }
+            expected.push(DragAction::Wait(Duration::from_millis(150)));
+            expected.push(DragAction::Button(button.key_code(), 0));
+            assert_eq!(actions, expected);
+        }
+    }
+
+    #[test]
+    fn drag_interpolation_handles_reverse_short_stationary_and_extreme_paths() {
+        for (start, end) in [
+            ((500, 600), (100, 200)),
+            ((0, 7), (1, 6)),
+            ((4, 4), (4, 4)),
+            ((i32::MIN, i32::MAX), (i32::MAX, i32::MIN)),
+        ] {
+            let mut points = Vec::new();
+            run_drag(start, end, PointerButton::Left, |action| {
+                if let DragAction::Move(x, y) = action {
+                    points.push((x, y));
+                }
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(points.len(), 21);
+            assert_eq!(points[0], start);
+            assert_eq!(*points.last().unwrap(), end);
+            for pair in points.windows(2) {
+                for (from, to, a, b) in [
+                    (start.0, end.0, pair[0].0, pair[1].0),
+                    (start.1, end.1, pair[0].1, pair[1].1),
+                ] {
+                    assert!((from.min(to)..=from.max(to)).contains(&b));
+                    assert!(if from <= to { a <= b } else { a >= b });
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn drag_releases_after_each_possible_motion_failure() {
+        for failed_move in 1..=20 {
+            let mut moves = 0;
+            let mut last = None;
+            let error = run_drag((0, 0), (100, 100), PointerButton::Right, |action| {
+                last = Some(action);
+                if matches!(action, DragAction::Move(..)) {
+                    moves += 1;
+                    if moves == failed_move + 1 {
+                        anyhow::bail!("motion failed");
+                    }
+                }
+                Ok(())
+            })
+            .unwrap_err();
+            assert_eq!(error.to_string(), "motion failed");
+            assert_eq!(
+                last,
+                Some(DragAction::Button(PointerButton::Right.key_code(), 0))
+            );
+        }
+    }
+
+    #[test]
+    fn drag_propagates_release_failure_and_stops_before_press_on_start_failure() {
+        let error = run_drag((0, 0), (100, 100), PointerButton::Left, |action| {
+            if matches!(action, DragAction::Button(_, 0)) {
+                anyhow::bail!("release failed");
+            }
+            Ok(())
+        })
+        .unwrap_err();
+        assert_eq!(error.to_string(), "release failed");
+        let mut count = 0;
+        assert!(run_drag((0, 0), (100, 100), PointerButton::Left, |_| {
+            count += 1;
+            anyhow::bail!("start failed")
+        })
+        .is_err());
+        assert_eq!(count, 1);
+    }
 
     #[test]
     fn axis_range_ends_at_last_desktop_pixel() {
