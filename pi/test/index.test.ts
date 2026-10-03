@@ -288,6 +288,81 @@ describe("native Pi extension", () => {
 		expect(second.content).toEqual(first.content);
 	});
 
+	it("extracts legacy JSON screenshots before applying text limits", async () => {
+		const harness = load();
+		await harness.emit("session_start");
+		const data = "A".repeat(400_000);
+		FakeMcpClient.result = { content: [{ type: "text", text: JSON.stringify({
+			screenshot: { data_url: `data:image/png;base64,${data}`, width: 480 },
+			accessibility_tree: [{ name: "Navigation" }],
+		}) }] };
+		const result = await harness.tools.get("computer_use_linux_get_app_state")!.execute(
+			"state", {}, undefined, undefined, {} as never,
+		);
+		const text = result.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+		expect(text.length).toBeLessThan(1000);
+		expect(text).not.toContain("base64");
+		expect(text).toContain("Navigation");
+		expect(result.content.find((block) => block.type === "image")).toMatchObject({ data, mimeType: "image/png" });
+	});
+
+	it("converts bare and JSON-string data URLs to native images", async () => {
+		const harness = load();
+		await harness.emit("session_start");
+		const url = "data:image/png;base64,aGVsbG8=";
+		for (const text of [url, JSON.stringify(url)]) {
+			FakeMcpClient.result = { content: [{ type: "text", text }] };
+			const result = await harness.tools.get("computer_use_linux_get_app_state")!.execute(
+				"state", {}, undefined, undefined, {} as never,
+			);
+			expect(result.content.filter((block) => block.type === "image")).toHaveLength(1);
+			expect(result.content.filter((block) => block.type === "text").map((block) => block.text).join("\n")).not.toContain("base64");
+		}
+	});
+
+	it("never falls back to base64 text when legacy images exceed the image cap", async () => {
+		const harness = load();
+		await harness.emit("session_start");
+		FakeMcpClient.result = { structuredContent: {
+			state: { screenshot: { data_url: `data:image/png;base64,${"A".repeat(3_000_000)}`, width: 480 } },
+		} };
+		const result = await harness.tools.get("computer_use_linux_run_script")!.execute(
+			"script", { code: "emit(1);" }, undefined, undefined, {} as never,
+		);
+		expect(result.content.filter((block) => block.type === "image")).toHaveLength(0);
+		const text = result.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+		expect(text.length).toBeLessThan(1000);
+		expect(text).not.toContain("base64");
+		expect(text).toContain("Result truncated");
+	});
+
+	it("bounds deep JSON extraction without throwing or dumping image payloads", async () => {
+		const harness = load();
+		await harness.emit("session_start");
+		FakeMcpClient.result = { content: [{ type: "text", text:
+			'{"nested":'.repeat(5000) + '{"data_url":"data:image/png;base64,aGVsbG8="}' + "}".repeat(5000),
+		}] };
+		const result = await harness.tools.get("computer_use_linux_get_app_state")!.execute(
+			"state", {}, undefined, undefined, {} as never,
+		);
+		const text = result.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+		expect(text).toContain("traversal limit");
+		expect(text).not.toContain("base64");
+	});
+
+	it("extracts images nested in legacy script JSON envelopes", async () => {
+		const harness = load();
+		await harness.emit("session_start");
+		FakeMcpClient.result = { content: [{ type: "text", text: JSON.stringify({
+			capture: { content: [{ type: "image", mimeType: "image/png", data: "aGVsbG8=" }] },
+		}) }] };
+		const result = await harness.tools.get("computer_use_linux_run_script")!.execute(
+			"script", { code: "emit(1);" }, undefined, undefined, {} as never,
+		);
+		expect(result.content.filter((block) => block.type === "image")).toHaveLength(1);
+		expect(result.content.filter((block) => block.type === "text").map((block) => block.text).join("\n")).not.toContain("aGVsbG8=");
+	});
+
 	it("marks MCP tool-level failures as Pi tool errors", async () => {
 		const harness = load();
 		await harness.emit("session_start");

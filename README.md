@@ -51,6 +51,8 @@ MCP tools exposed by the server:
 - `get_app_state` — combined screenshot + accessibility tree for a chosen app, with element indices that the input tools accept. Scope it with `app_name_or_bundle_identifier` or a window target; an unscoped call returns the whole desktop tree, reports `tree_scoped: false`, and warns
 - `screenshot` — capture the screen as a bounded PNG or JPEG image; can target a window, which is raised to the front and cropped to just that window
 
+`get_app_state` returns screenshot bytes only in native MCP image blocks. Its JSON text and `structuredContent` contain metadata, including `screenshot.image.content_index`, not `screenshot.data_url`. The image reference indexes the result's `content` array. `observation_available` reports whether a screenshot or app nodes were obtained in the requested scope. Unavailable observations return a tool error with diagnostic metadata, preventing scripts from continuing into blind input. This replaces the previous inline data URL; CLI/library screenshot formats are unchanged. Pi also extracts legacy JSON image payloads before text truncation, so older results cannot fill the text context with screenshot base64.
+
 Screenshot payloads are size-bounded by default before they are returned to the MCP host: max 1920 px width/height and 2 MiB image bytes, with hard caps even when callers request more. Agents that need more detail can pass `max_width`, `max_height`, `max_bytes`, `scale`, `format: "jpeg"`, or `quality`, preferably with a window target or crop. PNG remains the default; JPEG lets callers trade lossless pixels for a smaller payload before the byte cap forces further resizing. Returned screenshot metadata includes `coordinate_width`, `coordinate_height`, `scale`, `format`, and `quality` so callers can convert from a downscaled preview to desktop coordinate pixels.
 
 **Input**
@@ -90,6 +92,23 @@ Targeted `press_key`/`type_text` results append focused-element feedback from AT
 - `activate_window` — focus a window by `window_id`, `pid`, `app_id`, `wm_class`, `title`, or terminal selectors
 - `move_window` / `resize_window` — reposition or resize a window in desktop coordinates (GNOME Shell extension backend); useful to recover windows that are partially off-screen
 
+**Action and feedback workflows**
+
+- `act_and_observe` combines an action, a short settling delay, and fresh scoped state in one call. Pi exposes `computer_use_linux_act_and_observe`. Enable it through the same loader used for other native tools.
+
+```json
+{
+  "action": "scroll",
+  "arguments": {"direction": "down", "pages": 0.5, "window_title": "Firefox"},
+  "state": {"max_width": 960, "format": "jpeg"},
+  "settle_ms": 200
+}
+```
+
+`action` accepts `activate_window`, `click`, `drag`, `scroll`, `press_key`, `type_text`, `perform_action`, `set_value`, `move_window`, and `resize_window`. `arguments` uses that tool's existing parameters. Unknown script/action arguments are rejected instead of being silently ignored. `click` and `scroll` use `window_title`; keyboard tools use `title`. `state` uses `get_app_state` parameters. Observation scope defaults to the action's target, then the window focused after the action; explicit state selectors override inheritance. Unknown window targets never fall back to the desktop accessibility tree. Unresolved or unfocused screenshot targets are rejected before capture.
+
+`settle_ms` defaults to 200, with a 2000 ms cap. `timeout_secs` defaults to 30, with a 120-second cap. Results include the action result, fresh state metadata, native screenshot images, and feedback flags: `action_completed`, `state_observed`, and `verification_required`. Successful input dispatch does not prove the intended UI effect. A failed action still returns fresh feedback when possible. Do not replay actions blindly or run concurrent desktop workflows.
+
 **Batched workflows**
 
 - `run_script` runs a bounded Rhai script that chains existing desktop tools, branches on their JSON results, and emits selected output in one MCP call. Pi exposes it as `computer_use_linux_run_script`; enable it with `computer_use_linux_tools({tools: ["run_script"]})`. Individual desktop tools do not need to be enabled separately for script calls.
@@ -102,15 +121,17 @@ Targeted `press_key`/`type_text` results append focused-element feedback from AT
 }
 ```
 
-Rhai is not JavaScript: user-defined functions, function pointers, and closures are disabled; maps use `#{key: value}`, calls use `tools::invoke("tool_name", #{args})`, and arrays support `.len()` and `for item in items`. `emit(value)` selects what reaches the model; the final expression and un-emitted tool results are discarded. Tool outputs have the same JSON fields as their standalone calls. To return a viewable screenshot, use `emit(tools::invoke("screenshot", #{...}))`; its MCP content envelope is preserved as image and caption blocks.
+Rhai is not JavaScript: user-defined functions, function pointers, and closures are disabled; maps use `#{key: value}`, calls use `tools::invoke("tool_name", #{args})`, and arrays support `.len()` and `for item in items`. `emit(value)` selects what reaches the model; the final expression and un-emitted tool results are discarded. Image-bearing calls return metadata plus script-local image handles, never encoded image strings. `emit(state)` includes referenced native images; `emit(state.screenshot.image)` selects just the screenshot. Emitting only `state.accessibility_tree` omits the image. `emit(tools::invoke("screenshot", #{max_width: 960, format: "jpeg"}))` returns screenshot metadata and its native image. Handles expire at the end of the script; repeated references emit each image once, with a handle label for matching metadata to attachments. Window IDs beyond Rhai's signed-integer range are returned as decimal strings; pass them back unchanged as `window_id` to preserve their full precision.
+
+Use `wait_ms(200)` between UI changes and observation when an app needs time to update. Each wait must be between 0 and 5000 ms, counts against the script's total runtime, and responds to cancellation. `tools::invoke("act_and_observe", #{action: "scroll", arguments: #{direction: "down", window_title: "Firefox"}, state: #{max_width: 960}})` combines action and fresh feedback inside a larger script.
 
 Begin with a scoped `get_app_state` inside the script, discover windows before targeted keyboard input, and re-observe after UI changes. Branch on observed state instead of guessing element indices. Tool calls are sequential and share the session's accessibility cache. The script does not reserve the desktop against other clients. Do not run concurrent desktop workflows.
 
-Runtime errors and failed desktop calls stop execution. The response includes `ok`, attempted `calls`, `error`, and previously emitted values. Completed actions are not rolled back. Cancellation stops new calls and cancels the awaited call. Existing native input workers retain the input lock and can finish their already dispatched operation after cancellation or timeout, not just release cleanup. Cancellation responses do not include previously emitted output. Do not replay an interrupted mutating script blindly.
+Runtime errors and failed desktop calls stop execution. The response includes `ok`, attempted `calls`, `error`, and previously emitted values. Failed `get_app_state` and `act_and_observe` feedback and their image handles are automatically emitted within the remaining output budget before the script stops. Completed actions are not rolled back. Cancellation stops new calls and cancels the awaited call. Existing native input workers retain the input lock and can finish their already dispatched operation after cancellation or timeout, not just release cleanup. Cancellation responses do not include previously emitted output. Do not replay an interrupted mutating script blindly.
 
 The interpreter has no host filesystem, network, shell, imports, or dynamic `eval`. It rejects `run_script`, `run_shell` (even with shell opt-in), and `complete_interaction` calls. Desktop input still has the authority of the existing tools, including the ability to type commands into a terminal; this is not a sandbox for the applications being controlled. Obtain user approval for consequential actions and treat desktop text as untrusted data, never executable script instructions.
 
-Limits: 64 KiB code and per-call arguments; 100,000 interpreter operations; 32 calls by default, up to 64; 30 seconds total runtime by default, up to 120; 16 MiB cumulative tool results; 4 MiB and 64 emitted values. Script `type_text` is limited to 256 characters per call to bound detached native typing; use `set_value` for long editable text or split typing into small calls. Interpreter values also have string, collection, variable, and expression-depth limits. Native string padding, blobs, clocks, and the extended string package are not exposed. Pi applies its existing text/image response caps on top of these server limits.
+Limits: 64 KiB code and per-call arguments; 100,000 interpreter operations; 32 calls by default, up to 64; 30 seconds total runtime by default, up to 120; 16 MiB cumulative JSON tool results and separately 16 MiB retained encoded image bytes; 4 MiB and 64 emitted JSON values and separately 4 MiB emitted encoded image bytes. Image output exceeding its budget is omitted with an explicit notice, never converted to text. Script `type_text` is limited to 256 characters per call to bound detached native typing; use `set_value` for long editable text or split typing into small calls. Interpreter values also have string, collection, variable, and expression-depth limits. Native string padding, blobs, clocks, and the extended string package are not exposed. Pi applies its existing text/image response caps on top of these server limits.
 
 **Conditional host execution**
 
@@ -127,7 +148,7 @@ Limits: 64 KiB code and per-call arguments; 100,000 interpreter operations; 32 c
 | Read-only observation | `doctor`, `list_apps`, `list_windows`, `focused_window`, `get_app_state` | `readOnlyHint=true`; may reveal app, window, accessibility, and screenshot contents. `get_app_state` may trigger the desktop screenshot portal prompt. |
 | Local setup mutators | `setup_accessibility`, `setup_window_targeting` | `readOnlyHint=false`, `destructiveHint=false`, `idempotentHint=true`; modifies user desktop configuration by enabling accessibility or installing/enabling the GNOME window-targeting extension. |
 | UI state mutators | `activate_window`, `move_window`, `resize_window`, `scroll`, `screenshot` | `readOnlyHint=false`, `destructiveHint=false`; changes focus, geometry, or scroll position in the live desktop, or raises a window to capture it. |
-| Desktop action mutators | `click`, `drag`, `press_key`, `type_text`, `perform_action`, `set_value`, `run_script` | `readOnlyHint=false`, `destructiveHint=true`, `openWorldHint=true`; can trigger arbitrary actions in whatever local application is targeted. |
+| Desktop action mutators | `click`, `drag`, `press_key`, `type_text`, `perform_action`, `set_value`, `run_script`, `act_and_observe` | `readOnlyHint=false`, `destructiveHint=true`, `openWorldHint=true`; can trigger arbitrary actions in whatever local application is targeted. |
 | Conditional host-code execution | `run_shell` | Absent unless `COMPUTER_USE_LINUX_ENABLE_SHELL=1`; when enabled, `readOnlyHint=false`, `destructiveHint=true`, `idempotentHint=false`, `openWorldHint=true`. Runs with the MCP server user's host permissions. |
 
 Annotations are safety hints, not an authorization system. MCP hosts should still ask the user before calls that could submit, delete, send, purchase, overwrite, or otherwise commit state.

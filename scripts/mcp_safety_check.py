@@ -35,6 +35,7 @@ EXPECTED_TOOLS = {
     "perform_action",
     "set_value",
     "run_script",
+    "act_and_observe",
 }
 SHELL_TOOL = "run_shell"
 COMPLETION_TOOL = "complete_interaction"
@@ -104,6 +105,7 @@ DESTRUCTIVE_MUTATING_TOOLS = {
     "perform_action",
     "set_value",
     "run_script",
+    "act_and_observe",
     SHELL_TOOL,
 }
 
@@ -334,6 +336,7 @@ def main() -> int:
             'tools::invoke("run_script", #{code: "1"});',
             'tools::invoke("unknown_tool", #{});',
             'tools::invoke("click", #{x: "invalid"});',
+            'wait_ms(5001);',
             'loop {}',
         ]:
             result = client.request("tools/call", {
@@ -341,6 +344,34 @@ def main() -> int:
             })["result"]
             if result.get("isError") is not True:
                 raise AssertionError(f"script accepted unsafe/invalid code: {code!r}")
+
+        invalid_workflow = client.request("tools/call", {
+            "name": "act_and_observe",
+            "arguments": {"action": "scroll", "arguments": {}, "settle_ms": 2001},
+        })["result"]
+        if invalid_workflow.get("isError") is not True:
+            raise AssertionError("workflow accepted an unbounded settle delay")
+        state = client.request("tools/call", {
+            "name": "get_app_state",
+            "arguments": {"window_id": 18446744073709551615, "include_screenshot": False},
+        })["result"]
+        metadata = state.get("structuredContent") or json.loads(state["content"][0]["text"])
+        if metadata["accessibility_tree"] or "refusing an unscoped" not in metadata["accessibility_error"]:
+            raise AssertionError("unresolved scope returned the desktop tree")
+        if "data_url" in json.dumps(metadata):
+            raise AssertionError("app state metadata exposed an inline image payload")
+
+        failed_feedback = client.request("tools/call", {
+            "name": "run_script",
+            "arguments": {"code": 'tools::invoke("act_and_observe", #{action: "click", arguments: #{}, state: #{pid: 4294967295, include_screenshot: false}, settle_ms: 0});'},
+        })["result"]
+        if failed_feedback.get("isError") is not True or len(failed_feedback["content"]) < 2:
+            raise AssertionError("failed script workflow discarded fresh feedback")
+        feedback = json.loads(failed_feedback["content"][1]["text"])
+        if feedback["feedback"]["action_completed"] is not False or not feedback.get("state"):
+            raise AssertionError(f"failed workflow feedback was incomplete: {feedback!r}")
+        if "refusing an unscoped" not in feedback["state"]["accessibility_error"]:
+            raise AssertionError("failed workflow lost scoped observation refusal")
 
         request_id = client.next_id
         client.next_id += 1

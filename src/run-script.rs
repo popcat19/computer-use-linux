@@ -76,6 +76,55 @@ fn check_active(cancelled: &AtomicBool, deadline: Instant) -> Result<(), String>
     }
 }
 
+fn bridge_window_ids(value: &mut Value, to_script: bool) -> Result<(), String> {
+    match value {
+        Value::Object(object) => {
+            if let Some(id) = object.get_mut("window_id") {
+                if to_script {
+                    if let Some(number) = id.as_u64().filter(|number| *number > i64::MAX as u64) {
+                        *id = Value::String(number.to_string());
+                    }
+                } else if let Some(number) = id.as_str() {
+                    *id = Value::from(
+                        number
+                            .parse::<u64>()
+                            .map_err(|_| "window_id must be a decimal unsigned integer")?,
+                    );
+                }
+            }
+            for nested in object.values_mut() {
+                bridge_window_ids(nested, to_script)?;
+            }
+        }
+        Value::Array(array) => {
+            for nested in array {
+                bridge_window_ids(nested, to_script)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn await_bounded<T>(
+    runtime: &tokio::runtime::Handle,
+    cancelled: &AtomicBool,
+    deadline: Instant,
+    future: impl std::future::Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    runtime.block_on(async {
+        let mut poll = tokio::time::interval(Duration::from_millis(10));
+        tokio::pin!(future);
+        loop {
+            tokio::select! {
+                biased;
+                _ = poll.tick() => check_active(cancelled, deadline)?,
+                result = &mut future => break result,
+            }
+        }
+    })
+}
+
 pub(crate) async fn execute_script<F>(params: ScriptParams, dispatch: F) -> ScriptOutput
 where
     F: Fn(String, Value) -> BoxFuture<'static, Result<Value, String>> + Send + Sync + 'static,
@@ -161,6 +210,32 @@ fn evaluate(
             .map(Dynamic::from)
     });
 
+    let wait_state = state.clone();
+    let wait_cancelled = cancelled.clone();
+    let wait_runtime = runtime.clone();
+    engine.register_fn(
+        "wait_ms",
+        move |milliseconds: rhai::INT| -> Result<(), Box<EvalAltResult>> {
+            let result = (|| {
+                check_active(&wait_cancelled, deadline)?;
+                if let Some(error) = &wait_state.lock().unwrap().error {
+                    return Err(error.clone());
+                }
+                if !(0..=5000).contains(&milliseconds) {
+                    return Err("wait_ms must be between 0 and 5000".into());
+                }
+                await_bounded(&wait_runtime, &wait_cancelled, deadline, async {
+                    tokio::time::sleep(Duration::from_millis(milliseconds as u64)).await;
+                    Ok(())
+                })
+            })();
+            result.map_err(|error| {
+                wait_state.lock().unwrap().error = Some(error.clone());
+                script_error(error)
+            })
+        },
+    );
+
     let call_state = state.clone();
     let mut tools = Module::new();
     tools.set_native_fn(
@@ -182,7 +257,7 @@ fn evaluate(
                     }
                     state.calls += 1;
                 }
-                let args = rhai::serde::from_dynamic::<Value>(&Dynamic::from(args))
+                let mut args = rhai::serde::from_dynamic::<Value>(&Dynamic::from(args))
                     .map_err(|error| error.to_string())?;
                 if serde_json::to_vec(&args)
                     .map_err(|error| error.to_string())?
@@ -191,18 +266,13 @@ fn evaluate(
                 {
                     return Err("tool arguments exceed 65536 bytes".into());
                 }
-                let result = runtime.block_on(async {
-                    let mut poll = tokio::time::interval(Duration::from_millis(10));
-                    let call = dispatch(name.to_owned(), args);
-                    tokio::pin!(call);
-                    loop {
-                        tokio::select! {
-                            biased;
-                            _ = poll.tick() => check_active(&cancelled, deadline)?,
-                            result = &mut call => break result,
-                        }
-                    }
-                })?;
+                bridge_window_ids(&mut args, false)?;
+                let mut result = await_bounded(
+                    &runtime,
+                    &cancelled,
+                    deadline,
+                    dispatch(name.to_owned(), args),
+                )?;
                 check_active(&cancelled, deadline)?;
                 let bytes = serde_json::to_vec(&result)
                     .map_err(|error| error.to_string())?
@@ -217,11 +287,24 @@ fn evaluate(
                 if result.get("ok") == Some(&Value::Bool(false))
                     || result.get("isError") == Some(&Value::Bool(true))
                 {
+                    if name == "get_app_state"
+                        || (name == "act_and_observe" && result.get("feedback").is_some())
+                    {
+                        let mut state = call_state.lock().unwrap();
+                        if state.outputs.len() < 64
+                            && state.output_bytes + bytes <= MAX_OUTPUT_BYTES
+                        {
+                            state.output_bytes += bytes;
+                            state.outputs.push(result.clone());
+                        }
+                    }
                     return Err(format!(
                         "{name} failed: {}",
                         result.get("message").unwrap_or(&result)
                     ));
                 }
+                // Rhai otherwise casts large u64 IDs to lossy f64 values.
+                bridge_window_ids(&mut result, true)?;
                 rhai::serde::to_dynamic(result).map_err(|error| error.to_string())
             })();
             result.map_err(|error| {
@@ -306,6 +389,34 @@ mod tests {
         assert_eq!(output.error, None);
         assert_eq!(output.calls, 4);
         assert_eq!(output.outputs, vec![json!(0), json!(1), json!(2)]);
+    }
+
+    #[tokio::test]
+    async fn large_window_ids_round_trip_without_float_precision_loss() {
+        let output = execute_script(
+            params(
+                r#"
+            let windows = tools::invoke("list_windows", #{});
+            let id = windows.windows[0].window_id;
+            emit(id);
+            tools::invoke("activate_window", #{window_id:id});
+        "#,
+            ),
+            |name, args| {
+                Box::pin(async move {
+                    if name == "list_windows" {
+                        Ok(json!({"windows":[{"window_id":u64::MAX}]}))
+                    } else {
+                        assert_eq!(args["window_id"].as_u64(), Some(u64::MAX));
+                        Ok(json!({"ok":true}))
+                    }
+                })
+            },
+        )
+        .await;
+        assert_eq!(output.error, None);
+        assert_eq!(output.calls, 2);
+        assert_eq!(output.outputs, vec![json!(u64::MAX.to_string())]);
     }
 
     #[tokio::test]
@@ -494,6 +605,55 @@ mod tests {
         let error = bounded_error("界".repeat(10000));
         assert!(error.len() < 8300);
         assert!(error.ends_with("[error truncated]"));
+    }
+
+    #[tokio::test]
+    async fn unavailable_observation_feedback_stops_before_input() {
+        let state = json!({"ok":false,"observation_available":false,"accessibility_error":"scope unavailable"});
+        let copy = state.clone();
+        let output = execute_script(
+            params(r#"tools::invoke("get_app_state", #{}); tools::invoke("click", #{});"#),
+            move |_, _| {
+                let copy = copy.clone();
+                Box::pin(async move { Ok(copy) })
+            },
+        )
+        .await;
+        assert!(output.error.is_some());
+        assert_eq!(output.calls, 1);
+        assert_eq!(output.outputs, vec![state]);
+    }
+
+    #[tokio::test]
+    async fn failed_workflow_feedback_is_emitted_before_stopping() {
+        let feedback = json!({"ok":false,"feedback":{"state_observed":true},"state":{"screenshot":{"image":{"$image":0}}}});
+        let copy = feedback.clone();
+        let output = execute_script(
+            params(r#"tools::invoke("act_and_observe", #{}); tools::invoke("later", #{});"#),
+            move |_, _| {
+                let copy = copy.clone();
+                Box::pin(async move { Ok(copy) })
+            },
+        )
+        .await;
+        assert!(output.error.is_some());
+        assert_eq!(output.calls, 1);
+        assert_eq!(output.outputs, vec![feedback]);
+    }
+
+    #[tokio::test]
+    async fn waits_are_bounded_and_use_the_total_deadline() {
+        let output = run("wait_ms(10); emit(1);").await;
+        assert_eq!(output.error, None);
+        assert_eq!(output.calls, 0);
+        assert_eq!(output.outputs, vec![json!(1)]);
+        for code in ["wait_ms(-1);", "wait_ms(5001);"] {
+            assert!(run(code).await.error.is_some());
+        }
+        let mut input = params("wait_ms(5000);");
+        input.timeout_secs = Some(1);
+        let output = execute_script(input, |_, _| panic!("dispatch during wait")).await;
+        assert!(output.error.unwrap().contains("runtime limit"));
     }
 
     #[tokio::test]

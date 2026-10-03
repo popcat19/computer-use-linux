@@ -16,6 +16,8 @@ mod run_script;
 mod screenshot_impl;
 mod server;
 mod terminal;
+#[path = "tool-output.rs"]
+mod tool_output;
 mod windowing;
 mod windows;
 mod ydotool;

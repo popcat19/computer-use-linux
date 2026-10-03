@@ -15,6 +15,8 @@ Purpose: Index the Rust desktop-control modules and workflow boundary.
 - `main.rs`: Purpose: Start the main CLI with the selected allocator.
 - `server.rs`: Purpose: Define MCP tools and dispatch desktop operations.
 - `run-script.rs`: Purpose: Execute bounded Rhai desktop workflows without host-code access.
+- `desktop-workflows.rs`: Purpose: Run a desktop action and return fresh scoped observation feedback.
+- `tool-output.rs`: Purpose: Keep screenshot payloads out of JSON and retain native script images.
 - `cli.rs`: Purpose: Parse and execute CLI commands.
 - `abs_pointer.rs`: Purpose: Provide an absolute uinput pointer backend.
 - `accessibility_guard.rs`: Purpose: Run the optional foreground GNOME accessibility guard.
@@ -37,4 +39,4 @@ Purpose: Index the Rust desktop-control modules and workflow boundary.
 
 ## Workflow boundary
 
-`run_script` uses the existing server instance, so accessibility indices and input backends are shared with standalone tools. Its dispatcher excludes shell execution, script recursion, and completion notifications. Scripts are sequential, not desktop transactions; completed actions survive failure and cancellation.
+`run_script` uses the existing server instance, so accessibility indices and input backends are shared with standalone tools. Its dispatcher excludes shell execution, script recursion, and completion notifications. Scripts are sequential, not desktop transactions; completed actions survive failure and cancellation. Image-bearing calls replace payloads with script-local handles before entering Rhai. Native image blocks are attached only when emitted metadata references those handles. `act_and_observe` separates completed input from fresh state and requires effect verification. Unknown window targets refuse an unscoped accessibility-tree fallback.
