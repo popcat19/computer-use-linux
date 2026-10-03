@@ -34,6 +34,7 @@ EXPECTED_TOOLS = {
     "type_text",
     "perform_action",
     "set_value",
+    "run_script",
 }
 SHELL_TOOL = "run_shell"
 COMPLETION_TOOL = "complete_interaction"
@@ -102,6 +103,7 @@ DESTRUCTIVE_MUTATING_TOOLS = {
     "type_text",
     "perform_action",
     "set_value",
+    "run_script",
     SHELL_TOOL,
 }
 
@@ -317,6 +319,43 @@ def main() -> int:
             if name in {"perform_action", "set_value"} and not OBJECT_REF_SELECTORS <= props:
                 raise AssertionError(f"{name} is missing object/semantic element selectors: {sorted(OBJECT_REF_SELECTORS - props)}")
 
+        script = client.request("tools/call", {
+            "name": "run_script",
+            "arguments": {"code": 'for n in 0..3 { emit(#{index: n}); }'},
+        })["result"]
+        summary = json.loads(script["content"][0]["text"])
+        emitted = [json.loads(block["text"]) for block in script["content"][1:]]
+        if script.get("isError") or summary != {"ok": True, "calls": 0, "error": None}:
+            raise AssertionError(f"script evaluation failed: {script!r}")
+        if emitted != [{"index": n} for n in range(3)]:
+            raise AssertionError(f"script emit order changed: {emitted!r}")
+        for code in [
+            'tools::invoke("run_shell", #{command: "id"});',
+            'tools::invoke("run_script", #{code: "1"});',
+            'tools::invoke("unknown_tool", #{});',
+            'tools::invoke("click", #{x: "invalid"});',
+            'loop {}',
+        ]:
+            result = client.request("tools/call", {
+                "name": "run_script", "arguments": {"code": code},
+            })["result"]
+            if result.get("isError") is not True:
+                raise AssertionError(f"script accepted unsafe/invalid code: {code!r}")
+
+        request_id = client.next_id
+        client.next_id += 1
+        client._write({
+            "jsonrpc": "2.0", "id": request_id, "method": "tools/call",
+            "params": {"name": "run_script", "arguments": {
+                "code": 'for n in 0..64 { tools::invoke("doctor", #{}); }',
+                "max_calls": 64,
+            }},
+        })
+        client.notify("notifications/cancelled", {"requestId": request_id, "reason": "test"})
+        cancelled = client._read_response(request_id)["result"]
+        if cancelled.get("isError") is not True or "cancelled" not in cancelled["content"][0]["text"]:
+            raise AssertionError(f"MCP cancellation did not stop the script: {cancelled!r}")
+
         doctor = client.request("tools/call", {"name": "doctor", "arguments": {}})["result"]
         content = doctor.get("content") or []
         if not content or content[0].get("type") != "text":
@@ -375,6 +414,12 @@ def main() -> int:
             raise AssertionError(
                 f"unexpected opt-in tools: missing={expected - names}, extra={names - expected}"
             )
+        script = shell_client.request("tools/call", {
+            "name": "run_script",
+            "arguments": {"code": 'tools::invoke("run_shell", #{command: "id"});'},
+        })["result"]
+        if script.get("isError") is not True:
+            raise AssertionError("scripts gained host shell access through shell opt-in")
         shell_tool = next(tool for tool in tools if tool.get("name") == SHELL_TOOL)
         assert_tool_annotations(shell_tool)
         shell_props = schema_properties(shell_tool)

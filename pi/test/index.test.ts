@@ -193,6 +193,28 @@ describe("native Pi extension", () => {
 		expect(FakeMcpClient.instances).toHaveLength(0);
 	});
 
+	it("enables and forwards a whole script without activating individual tools", async () => {
+		const harness = load();
+		await harness.emit("session_start");
+		await harness.tools.get("computer_use_linux_tools")!.execute(
+			"loader", { tools: ["run_script"] }, undefined, undefined, {} as never,
+		);
+		expect(harness.activeTools()).toContain("computer_use_linux_run_script");
+		expect(harness.activeTools()).not.toContain("computer_use_linux_list_windows");
+		const args = {
+			code: 'let windows = tools::invoke("list_windows", #{}); emit(windows);',
+			max_calls: 8,
+			timeout_secs: 30,
+		};
+		const signal = new AbortController().signal;
+		await harness.tools.get("computer_use_linux_run_script")!.execute(
+			"script", args, signal, undefined, {} as never,
+		);
+		expect(FakeMcpClient.instances[0]?.calls).toEqual([
+			{ name: "run_script", args, signal },
+		]);
+	});
+
 	it("restores enabled tools from persisted branch state", async () => {
 		const harness = load();
 		await harness.emit("session_start", { reason: "startup" });

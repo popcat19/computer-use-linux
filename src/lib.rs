@@ -10,6 +10,8 @@ mod diagnostics_impl;
 mod gnome_extension;
 mod identity;
 mod remote_desktop;
+#[path = "run-script.rs"]
+mod run_script;
 #[path = "screenshot.rs"]
 mod screenshot_impl;
 mod server;
