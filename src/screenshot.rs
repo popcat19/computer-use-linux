@@ -1,3 +1,5 @@
+// Purpose: Capture and bound screenshot payloads.
+
 use crate::diagnostics::hydrate_session_bus_env;
 use anyhow::{anyhow, bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -107,6 +109,14 @@ enum ScreenshotCleanup {
     Preserve,
 }
 
+impl Drop for ScreenshotCleanup {
+    fn drop(&mut self) {
+        if let Self::DeletePath(path) = self {
+            cleanup_gnome_requested_path(path);
+        }
+    }
+}
+
 impl ScreenshotPayloadOptions {
     fn resolve(self) -> ResolvedScreenshotPayloadOptions {
         let max_width = self
@@ -171,6 +181,16 @@ impl ScreenshotBackend {
             Self::GnomeScreenshot => capture_with_gnome_screenshot().await,
         }
     }
+}
+
+tokio::task_local! {static ZOOM_READ_CONTROL:crate::zoom_processing::Control;}
+
+pub(crate) async fn capture_zoom_raw(
+    control: &crate::zoom_processing::Control,
+) -> Result<RawScreenshotCapture> {
+    ZOOM_READ_CONTROL
+        .scope(control.clone(), capture_screenshot_raw())
+        .await
 }
 
 pub async fn capture_screenshot_raw() -> Result<RawScreenshotCapture> {
@@ -379,12 +399,26 @@ async fn capture_with_gnome_screenshot() -> Result<RawScreenshotCapture> {
     let filename = path
         .to_str()
         .context("temporary screenshot path is not valid UTF-8")?;
+    let _cleanup = ScreenshotCleanup::DeletePath(path.clone());
 
     // `-f <file>` writes a full-screen PNG without prompting; no portal, no
     // foreground window required. `tokio::process::Command` searches PATH and
     // provides an async, non-polling wait.
-    let mut child = match Command::new("gnome-screenshot")
-        .args(["-f", filename])
+    let mut command = Command::new("gnome-screenshot");
+    command.args(["-f", filename]);
+    wait_screenshot_command(&mut command).await?;
+
+    read_png_as_capture(
+        path.clone(),
+        "gnome-screenshot",
+        ScreenshotCleanup::DeletePath(path),
+    )
+    .await
+}
+
+async fn wait_screenshot_command(command: &mut Command) -> Result<()> {
+    let mut child = match command
+        .kill_on_drop(true)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -392,7 +426,6 @@ async fn capture_with_gnome_screenshot() -> Result<RawScreenshotCapture> {
     {
         Ok(child) => child,
         Err(error) => {
-            cleanup_gnome_requested_path(&path);
             return Err(error).context("failed to spawn gnome-screenshot");
         }
     };
@@ -402,27 +435,19 @@ async fn capture_with_gnome_screenshot() -> Result<RawScreenshotCapture> {
     let status = match tokio::time::timeout(GNOME_SCREENSHOT_TIMEOUT, child.wait()).await {
         Ok(Ok(status)) => status,
         Ok(Err(error)) => {
-            cleanup_gnome_requested_path(&path);
             return Err(error).context("failed to wait for gnome-screenshot");
         }
         Err(_) => {
             let _ = child.kill().await;
-            cleanup_gnome_requested_path(&path);
             bail!("gnome-screenshot timed out");
         }
     };
 
     if !status.success() {
-        cleanup_gnome_requested_path(&path);
         bail!("gnome-screenshot exited with {status}");
     }
 
-    read_png_as_capture(
-        path.clone(),
-        "gnome-screenshot",
-        ScreenshotCleanup::DeletePath(path),
-    )
-    .await
+    Ok(())
 }
 
 async fn portal_response_stream(connection: &zbus::Connection) -> Result<MessageStream> {
@@ -472,10 +497,35 @@ async fn read_png_as_capture(
     source: &str,
     cleanup: ScreenshotCleanup,
 ) -> Result<RawScreenshotCapture> {
-    let result = read_png_as_capture_inner(&path, source);
-    if let ScreenshotCleanup::DeletePath(path) = cleanup {
-        let _ = fs::remove_file(path);
-    }
+    let control = ZOOM_READ_CONTROL.try_with(Clone::clone).ok();
+    finish_capture_read(cleanup, async {
+        if let Some(control) = control {
+            let path = path.clone();
+            let source = source.to_string();
+            control
+                .job(move |control| {
+                    crate::zoom_capture::read(
+                        &path,
+                        &source,
+                        crate::zoom::MAX_SOURCE_BYTES,
+                        &control,
+                    )
+                })
+                .await
+                .map_err(anyhow::Error::msg)
+        } else {
+            read_png_as_capture_inner(&path, source)
+        }
+    })
+    .await
+}
+
+async fn finish_capture_read(
+    cleanup: ScreenshotCleanup,
+    read: impl std::future::Future<Output = Result<RawScreenshotCapture>>,
+) -> Result<RawScreenshotCapture> {
+    let result = read.await;
+    drop(cleanup);
     result
 }
 
@@ -664,6 +714,10 @@ fn unique_suffix() -> String {
         .unwrap_or_default();
     format!("{}-{nanos}", std::process::id())
 }
+
+#[cfg(test)]
+#[path = "screenshot-cleanup-tests.rs"]
+mod cleanup_tests;
 
 #[cfg(test)]
 mod tests {

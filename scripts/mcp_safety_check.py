@@ -24,6 +24,7 @@ EXPECTED_TOOLS = {
     "list_windows",
     "focused_window",
     "screenshot",
+    "zoom",
     "activate_window",
     "move_window",
     "resize_window",
@@ -320,6 +321,39 @@ def main() -> int:
                 raise AssertionError(f"{name} is missing semantic element selectors: {sorted(SEMANTIC_SELECTORS - props)}")
             if name in {"perform_action", "set_value"} and not OBJECT_REF_SELECTORS <= props:
                 raise AssertionError(f"{name} is missing object/semantic element selectors: {sorted(OBJECT_REF_SELECTORS - props)}")
+
+        zoom_tool = next(tool for tool in tools if tool["name"] == "zoom")
+        if schema_properties(zoom_tool) != {"sources"}:
+            raise AssertionError("zoom must expose only bounded screenshot sources")
+        sources_schema = zoom_tool["inputSchema"]["properties"]["sources"]
+        if (sources_schema.get("minItems"), sources_schema.get("maxItems")) != (1, 4):
+            raise AssertionError("zoom source bounds are missing from the schema")
+        if zoom_tool["inputSchema"].get("additionalProperties") is not False:
+            raise AssertionError("zoom must reject unknown top-level arguments")
+        definitions = zoom_tool["inputSchema"].get("$defs") or {}
+        source_props = set((definitions.get("Source") or {}).get("properties") or {})
+        if source_props != {"image", "target", "reference", "raise_window", "regions"}:
+            raise AssertionError(f"zoom source schema changed: {source_props}")
+        regions_schema = definitions["Source"]["properties"]["regions"]
+        if (regions_schema.get("minItems"), regions_schema.get("maxItems")) != (1, 16):
+            raise AssertionError("zoom region bounds are missing from the schema")
+        factor_schema = definitions["Region"]["properties"]["factor"]
+        if (factor_schema.get("minimum"), factor_schema.get("maximum")) != (1, 8):
+            raise AssertionError("zoom factor bounds are missing from the schema")
+        region_props = set((definitions.get("Region") or {}).get("properties") or {})
+        if region_props != {"label", "rect", "element_index", "factor"}:
+            raise AssertionError(f"zoom region schema changed: {region_props}")
+        for arguments in [
+            {"sources": []},
+            {"sources": [{"image": {"$image": "foreign:0"}, "regions": [{"label": "old", "element_index": 1}]}]},
+            {"sources": [{"reference": {"width": 10, "height": 10, "coordinate_width": 20, "coordinate_height": 20}, "regions": [{"label": "overflow", "rect": {"x": 4294967295, "y": 0, "width": 2, "height": 1}}]}]},
+        ]:
+            zoom_result = client.request("tools/call", {"name": "zoom", "arguments": arguments})["result"]
+            if zoom_result.get("isError") is not True or any(block.get("type") == "image" for block in zoom_result.get("content", [])):
+                raise AssertionError(f"invalid zoom must fail before capture: {zoom_result!r}")
+        zoom_script = client.request("tools/call", {"name": "run_script", "arguments": {"code": 'tools::invoke("zoom", #{sources: [#{image: #{"$image": "foreign:0"}, regions: [#{label: "foreign", element_index: 1}]}]}); emit("must-not-run");'}})["result"]
+        if zoom_script.get("isError") is not True or "must-not-run" in json.dumps(zoom_script):
+            raise AssertionError("foreign image handle did not stop zoom script")
 
         script = client.request("tools/call", {
             "name": "run_script",

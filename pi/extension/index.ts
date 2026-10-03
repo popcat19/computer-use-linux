@@ -12,6 +12,7 @@ import type {
 	ExtensionContext,
 	ToolResultEvent,
 } from "@earendil-works/pi-coding-agent";
+import { convertMcpResult } from "./mcp-output.ts";
 import { StringEnum } from "@earendil-works/pi-ai";
 import {
 	accessSync,
@@ -43,17 +44,11 @@ const DEFAULT_TOOLS = [
 	"focused_window",
 	"get_app_state",
 ] as const;
-const MAX_RESULT_TEXT_CHARS = 200_000;
-const MAX_RESULT_IMAGE_BYTES = 2 * 1024 * 1024;
-const MAX_RESULT_IMAGES = 4;
-const TRUNCATION_NOTICE =
-	"[Result truncated by the Pi extension. Request a smaller/bounded result.]";
 const SHELL_ENABLED = process.env.COMPUTER_USE_LINUX_ENABLE_SHELL === "1";
 const AVAILABLE_MCP_TOOLS: readonly GeneratedMcpToolDefinition[] = SHELL_ENABLED
 	? [...GENERATED_MCP_TOOLS, ...GENERATED_OPTIONAL_MCP_TOOLS]
 	: GENERATED_MCP_TOOLS;
 
-type PiContent = AgentToolResult<Record<string, unknown>>["content"][number];
 
 interface McpCallToolResult {
 	content?: unknown[];
@@ -121,6 +116,7 @@ const TOOL_ALIASES: Record<string, string[]> = {
 	resize_window: ["window size"],
 	run_shell: ["shell", "command", "terminal"],
 	screenshot: ["image", "screen capture"],
+	zoom: ["crop", "enlarge", "inspect pixels", "screenshot region"],
 	scroll: ["wheel", "page"],
 	set_value: ["input value", "text field", "slider"],
 	setup_accessibility: ["at-spi", "accessibility setup"],
@@ -345,167 +341,6 @@ function renderJson(value: unknown): string {
 	}
 }
 
-function estimatedBase64Bytes(data: string): number {
-	const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
-	return Math.max(0, Math.floor((data.length * 3) / 4) - padding);
-}
-
-function convertMcpResult(result: McpCallToolResult): PiContent[] {
-	const converted: PiContent[] = [];
-	let remainingText = MAX_RESULT_TEXT_CHARS - TRUNCATION_NOTICE.length;
-	let imageBytes = 0;
-	let imageCount = 0;
-	let truncated = false;
-	const appendText = (text: string) => {
-		if (remainingText <= 0) {
-			if (text.length > 0) truncated = true;
-			return;
-		}
-		const keep = Math.min(text.length, remainingText);
-		if (keep > 0) {
-			converted.push({ type: "text", text: text.slice(0, keep) });
-			remainingText -= keep;
-		}
-		if (keep < text.length) truncated = true;
-	};
-	const appendImage = (data: string, mimeType: string) => {
-		if (!mimeType.startsWith("image/")) {
-			truncated = true;
-			return;
-		}
-		const bytes = estimatedBase64Bytes(data);
-		if (
-			imageCount >= MAX_RESULT_IMAGES ||
-			imageBytes + bytes > MAX_RESULT_IMAGE_BYTES
-		) {
-			truncated = true;
-			return;
-		}
-		converted.push({ type: "image", data, mimeType });
-		imageBytes += bytes;
-		imageCount += 1;
-	};
-
-	const appendResultText = (text: string) => {
-		if (!text.includes("data:image/") && !/"type"\s*:\s*"image"/.test(text)) {
-			appendText(text);
-			return;
-		}
-		let value: unknown;
-		try { value = JSON.parse(text); } catch {
-			if (text.startsWith("data:image/")) value = { data_url: text };
-			else { appendText(text); return; }
-		}
-		if (typeof value === "string" && value.startsWith("data:image/")) value = { data_url: value };
-		const images: Array<{ data: string; mimeType: string }> = [];
-		let changed = false;
-		const pending: Array<{ value: unknown; depth: number }> = [{ value, depth: 0 }];
-		let visited = 0;
-		while (pending.length > 0) {
-			const { value: nested, depth } = pending.pop()!;
-			if (++visited > 100_000 || depth > 128) {
-				truncated = true;
-				appendText("[JSON result omitted: image extraction traversal limit exceeded.]");
-				return;
-			}
-			if (Array.isArray(nested)) {
-				if (pending.length + nested.length > 100_000) {
-					truncated = true;
-					appendText("[JSON result omitted: image extraction traversal limit exceeded.]");
-					return;
-				}
-				for (const item of nested) pending.push({ value: item, depth: depth + 1 });
-				continue;
-			}
-			if (!isRecord(nested)) continue;
-			if (nested.type === "image" && typeof nested.data === "string") {
-				if (typeof nested.mimeType === "string") {
-					images.push({ mimeType: nested.mimeType, data: nested.data });
-				} else {
-					truncated = true;
-				}
-				delete nested.data;
-				nested.transport = "native";
-				changed = true;
-			}
-			if (typeof nested.data_url === "string" && nested.data_url.startsWith("data:image/")) {
-				const match = /^data:(image\/[a-zA-Z0-9.+-]+);base64,([a-zA-Z0-9+/=\r\n]*)$/.exec(nested.data_url);
-				delete nested.data_url;
-				changed = true;
-				if (match) {
-					images.push({ mimeType: match[1]!, data: match[2]! });
-					nested.image = { transport: "native", mime_type: match[1] };
-				} else {
-					truncated = true;
-				}
-			}
-			const children = Object.values(nested);
-			if (pending.length + children.length > 100_000) {
-				truncated = true;
-				appendText("[JSON result omitted: image extraction traversal limit exceeded.]");
-				return;
-			}
-			for (const item of children) pending.push({ value: item, depth: depth + 1 });
-		}
-		appendText(changed ? renderJson(value) : text);
-		for (const image of images) appendImage(image.data, image.mimeType);
-	};
-
-	for (const block of result.content ?? []) {
-		if (!isRecord(block) || typeof block.type !== "string") {
-			appendResultText(renderJson(block));
-			continue;
-		}
-		if (block.type === "text" && typeof block.text === "string") {
-			appendResultText(block.text);
-			continue;
-		}
-		if (
-			block.type === "image" &&
-			typeof block.data === "string" &&
-			typeof block.mimeType === "string"
-		) {
-			appendImage(block.data, block.mimeType);
-			continue;
-		}
-		if (block.type === "resource" && isRecord(block.resource)) {
-			const resource = block.resource;
-			if (typeof resource.text === "string") {
-				appendResultText(resource.text);
-				continue;
-			}
-			if (
-				typeof resource.blob === "string" &&
-				typeof resource.mimeType === "string" &&
-				resource.mimeType.startsWith("image/")
-			) {
-				appendImage(resource.blob, resource.mimeType);
-				continue;
-			}
-			if (typeof resource.blob === "string") {
-				truncated = true;
-				appendResultText(renderJson({ type: "resource", resource: { ...resource, blob: "[binary payload omitted]" } }));
-				continue;
-			}
-		}
-		if (block.type === "image") {
-			truncated = true;
-			continue;
-		}
-		appendResultText(renderJson(block));
-	}
-	if (converted.length === 0 && result.structuredContent !== undefined) {
-		appendResultText(renderJson(result.structuredContent));
-	}
-	if (truncated) {
-		converted.push({ type: "text", text: TRUNCATION_NOTICE });
-	}
-	if (converted.length === 0) {
-		converted.push({ type: "text", text: "(empty result)" });
-	}
-	return converted;
-}
-
 function legacyConfigPath(): string {
 	const agentDir =
 		process.env.PI_CODING_AGENT_DIR?.trim() || join(homedir(), ".pi", "agent");
@@ -637,7 +472,7 @@ export function createComputerUseLinuxExtension(
 				"Enable Linux desktop tools only when the task needs local GUI observation or control",
 			promptGuidelines: [
 				"Use computer_use_linux_tools before attempting local Linux GUI observation or control.",
-				"After enabling Computer Use tools, begin with get_app_state, standalone or inside run_script. Discover windows before targeted keyboard input. Prefer act_and_observe for an action plus fresh scoped feedback, or run_script with wait_ms for a multi-step workflow. Re-observe after UI changes; successful input dispatch does not verify its effect.",
+				"After enabling Computer Use tools, begin with get_app_state, standalone or inside run_script. Discover windows before targeted keyboard input. Prefer act_and_observe for an action plus fresh scoped feedback, or run_script with wait_ms for a multi-step workflow. Use zoom for labeled screenshot-region pixel inspection, not app zoom; fresh rectangles require actual preview reference geometry, and prior image handles only work within the same run_script. Re-observe after UI changes; successful input dispatch does not verify its effect.",
 			],
 			parameters: LoaderParameters,
 			async execute(_toolCallId, params) {

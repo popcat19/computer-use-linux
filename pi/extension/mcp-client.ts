@@ -1,3 +1,5 @@
+// Purpose: Maintain the bounded session-scoped MCP transport.
+
 import {
 	Client,
 	SdkError,

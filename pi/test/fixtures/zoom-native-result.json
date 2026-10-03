@@ -1,0 +1,146 @@
+{
+  "content": [
+    {
+      "text": "{\"ok\":true,\"regions\":[{\"bit_depth\":8,\"bytes\":119,\"coordinate_height\":4,\"coordinate_width\":8,\"crop_rect\":{\"height\":2,\"width\":4,\"x\":2,\"y\":2},\"detail_note\":\"Original captured pixels cropped before preview downscaling.\",\"factor\":2,\"filter\":\"nearest\",\"format\":\"png\",\"height\":4,\"image\":{\"content_index\":1},\"label\":\"first\",\"ok\":true,\"reference\":{\"coordinate_height\":6,\"coordinate_width\":8,\"height\":3,\"width\":4},\"retained_source\":false,\"selection\":{\"element_index\":null,\"rect\":{\"height\":1,\"width\":2,\"x\":1,\"y\":1}},\"source_dimensions\":{\"height\":6,\"width\":8},\"source_index\":0,\"transform\":{\"capture_dimensions\":[20,12],\"coordinate_to_capture_offset\":[4,2],\"output_to_capture_offset\":[6.0,4.0],\"output_to_capture_scale\":[0.5,0.5],\"output_to_source_offset\":[2,2],\"output_to_source_scale\":0.5,\"source_to_coordinate_scale\":[1.0,1.0]},\"width\":8,\"window_scope\":{\"backend\":\"fixture\",\"window_id\":123},\"zoom_association\":{\"capture_offset\":[6.0,4.0],\"capture_scale\":[0.5,0.5],\"elements\":{\"1\":{\"height\":4,\"width\":4,\"x\":0,\"y\":0}},\"frame_object_ref\":\"frame:fixture\",\"full_dimensions\":[20,12],\"identities\":{\"1\":{\"name\":null,\"object_ref\":\"button:fixture\",\"role\":\"button\"}},\"origin\":[4,2],\"window\":{\"app_id\":\"fixture\",\"backend\":\"fixture\",\"bounds\":{\"height\":6,\"width\":8,\"x\":4,\"y\":2},\"client_type\":\"wayland\",\"focused\":true,\"hidden\":false,\"pid\":123,\"title\":\"fixture\",\"window_id\":123,\"wm_class\":null,\"workspace\":null}}}]}",
+      "type": "text"
+    },
+    {
+      "data": "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAECAYAAACzzX7wAAAALElEQVR4nISMsQ0AMAjDnCrq/x9TpDLAhBfHS3xNkOgrLXofFoyipsqz14cHAAD//5AkFmgAAAAGSURBVAMA2mUFGaiLZ90AAAAASUVORK5CYII=",
+      "mimeType": "image/png",
+      "type": "image"
+    }
+  ],
+  "isError": false,
+  "structuredContent": {
+    "ok": true,
+    "regions": [
+      {
+        "bit_depth": 8,
+        "bytes": 119,
+        "coordinate_height": 4,
+        "coordinate_width": 8,
+        "crop_rect": {
+          "height": 2,
+          "width": 4,
+          "x": 2,
+          "y": 2
+        },
+        "detail_note": "Original captured pixels cropped before preview downscaling.",
+        "factor": 2,
+        "filter": "nearest",
+        "format": "png",
+        "height": 4,
+        "image": {
+          "content_index": 1
+        },
+        "label": "first",
+        "ok": true,
+        "reference": {
+          "coordinate_height": 6,
+          "coordinate_width": 8,
+          "height": 3,
+          "width": 4
+        },
+        "retained_source": false,
+        "selection": {
+          "element_index": null,
+          "rect": {
+            "height": 1,
+            "width": 2,
+            "x": 1,
+            "y": 1
+          }
+        },
+        "source_dimensions": {
+          "height": 6,
+          "width": 8
+        },
+        "source_index": 0,
+        "transform": {
+          "capture_dimensions": [
+            20,
+            12
+          ],
+          "coordinate_to_capture_offset": [
+            4,
+            2
+          ],
+          "output_to_capture_offset": [
+            6.0,
+            4.0
+          ],
+          "output_to_capture_scale": [
+            0.5,
+            0.5
+          ],
+          "output_to_source_offset": [
+            2,
+            2
+          ],
+          "output_to_source_scale": 0.5,
+          "source_to_coordinate_scale": [
+            1.0,
+            1.0
+          ]
+        },
+        "width": 8,
+        "window_scope": {
+          "backend": "fixture",
+          "window_id": 123
+        },
+        "zoom_association": {
+          "capture_offset": [
+            6.0,
+            4.0
+          ],
+          "capture_scale": [
+            0.5,
+            0.5
+          ],
+          "elements": {
+            "1": {
+              "height": 4,
+              "width": 4,
+              "x": 0,
+              "y": 0
+            }
+          },
+          "frame_object_ref": "frame:fixture",
+          "full_dimensions": [
+            20,
+            12
+          ],
+          "identities": {
+            "1": {
+              "name": null,
+              "object_ref": "button:fixture",
+              "role": "button"
+            }
+          },
+          "origin": [
+            4,
+            2
+          ],
+          "window": {
+            "app_id": "fixture",
+            "backend": "fixture",
+            "bounds": {
+              "height": 6,
+              "width": 8,
+              "x": 4,
+              "y": 2
+            },
+            "client_type": "wayland",
+            "focused": true,
+            "hidden": false,
+            "pid": 123,
+            "title": "fixture",
+            "window_id": 123,
+            "wm_class": null,
+            "workspace": null
+          }
+        }
+      }
+    ]
+  }
+}

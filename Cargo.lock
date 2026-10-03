@@ -348,6 +348,7 @@ dependencies = [
  "image",
  "libc",
  "mimalloc",
+ "png",
  "rhai",
  "rmcp",
  "schemars",

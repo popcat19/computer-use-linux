@@ -28,9 +28,19 @@ Purpose: Index the Rust desktop-control modules and workflow boundary.
 - `identity.rs`: Purpose: Share GNOME integration identifiers.
 - `remote_desktop.rs`: Purpose: Manage portal-backed keyboard and pointer input.
 - `screenshot.rs`: Purpose: Capture and bound screenshot payloads.
+- `screenshot-cleanup-tests.rs`: Purpose: Verify screenshot cancellation terminates owned subprocesses and removes owned temp files.
 - `terminal.rs`: Purpose: Identify terminal processes and paste behavior.
 - `windows.rs`: Purpose: Resolve window targets and focus operations.
 - `ydotool.rs`: Purpose: Discover and validate the ydotool input backend.
+
+- `zoom-capture.rs`: Purpose: Read fresh screenshot files with byte/header limits and cooperative checks before decoded allocation.
+- `zoom-processing.rs`: Purpose: Bound screenshot pixel work, allocations, encoding and cooperative cancellation off the async runtime.
+- `zoom-pixel-tests.rs`: Purpose: Prove screenshot pixel mappings, enlargement fidelity and bounded region outputs with synthetic PNGs.
+- `zoom-wire-tests.rs`: Purpose: Verify successful native and script MCP zoom routes with captured PNG fixtures and immutable object identities.
+- `zoom.rs`: Purpose: Validate screenshot-region requests and enlarge captured pixels without synthetic detail.
+- `zoom-association.rs`: Purpose: Bind accessibility bounds to one verified screenshot window and pixel coordinate space.
+- `zoom-workflow-tests.rs`: Purpose: Verify fresh and retained source preflight, geometry consistency and labeled partial results without desktop effects.
+- `zoom-workflow.rs`: Purpose: Resolve scoped fresh or script-retained sources for bounded screenshot zoom.
 
 ## Subdomains
 

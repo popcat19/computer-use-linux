@@ -1,3 +1,5 @@
+// Purpose: Wire internal modules and expose supported library APIs.
+
 mod abs_pointer;
 mod accessibility_guard;
 #[path = "atspi_tree.rs"]
@@ -21,6 +23,13 @@ mod tool_output;
 mod windowing;
 mod windows;
 mod ydotool;
+mod zoom;
+#[path = "zoom-association.rs"]
+mod zoom_association;
+#[path = "zoom-capture.rs"]
+mod zoom_capture;
+#[path = "zoom-processing.rs"]
+mod zoom_processing;
 
 pub mod atspi_tree {
     pub(crate) use crate::atspi_tree_impl::{

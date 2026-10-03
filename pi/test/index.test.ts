@@ -423,7 +423,7 @@ describe("native Pi extension", () => {
 		const harness = load();
 		await harness.emit("session_start");
 		FakeMcpClient.result = {
-			content: Array.from({ length: 5 }, () => ({
+			content: Array.from({ length: 17 }, () => ({
 				type: "image",
 				data: "aGVsbG8=",
 				mimeType: "image/png",
@@ -438,13 +438,37 @@ describe("native Pi extension", () => {
 			{} as never,
 		);
 
-		expect(result.content.filter((block) => block.type === "image")).toHaveLength(4);
+		expect(result.content.filter((block) => block.type === "image")).toHaveLength(16);
 		expect(
 			result.content
 				.filter((block) => block.type === "text")
 				.map((block) => block.text)
 				.join("\n"),
-		).toContain("Result truncated by the Pi extension");
+		).toContain("Native images omitted: 1");
+	});
+
+	it("loads zoom by crop capability and transports sixteen labeled native crops without encoded text", async () => {
+		const harness = load();
+		await harness.emit("session_start");
+		const loaded = await harness.tools.get("computer_use_linux_tools")!.execute(
+			"loader", { query: "crop" }, undefined, undefined, {} as never,
+		);
+		expect(loaded.details).toMatchObject({ matches: expect.arrayContaining(["zoom"]) });
+		expect(harness.activeTools()).toContain("computer_use_linux_zoom");
+		const args = { sources: [{ image: { $image: "script:0" }, regions: [{ label: "defect", rect: { x: 1, y: 2, width: 3, height: 4 } }] }] };
+		FakeMcpClient.result = {
+			content: [
+				{ type: "text", text: JSON.stringify({ ok: true, regions: Array.from({ length: 16 }, (_, n) => ({ label: `crop-${n}`, image: { content_index: n + 1 } })) }) },
+				...Array.from({ length: 16 }, () => ({ type: "image", data: "aGVsbG8=", mimeType: "image/png" })),
+			],
+		};
+		const result = await harness.tools.get("computer_use_linux_zoom")!.execute("zoom", args, undefined, undefined, {} as never);
+		expect(FakeMcpClient.instances[0]?.calls[0]).toMatchObject({ name: "zoom", args });
+		expect(result.content.filter((block) => block.type === "image")).toHaveLength(16);
+		const texts = result.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+		expect(texts).toContain("crop-15");
+		expect(texts).not.toContain("aGVsbG8=");
+		expect(texts).not.toContain("base64");
 	});
 
 	it("closes the session client exactly once", async () => {

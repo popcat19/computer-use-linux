@@ -226,3 +226,45 @@ Ready output should have:
 - `blockers: []`
 
 Then test with your agent by calling the `doctor` tool or asking the agent to list desktop windows.
+
+## Inspect screenshot regions
+
+Use `zoom` (`computer_use_linux_zoom`) for pixel inspection, never app zoom.
+Output consists of labeled native PNG crops enlarged with nearest-neighbor pixels, no overlays or synthetic detail.
+A call accepts 1–4 sources and 1–16 total regions with unique labels; factor defaults to 2 and must be an integer 1–8.
+Each source is captured/decoded once.
+
+- Fresh rectangles: provide `reference` from the actual screenshot metadata and measure `rect` in its preview pixels. Do not divide coordinates by scale yourself.
+- Fresh elements: call `get_app_state` with the same focused window and screenshots enabled first. Bounds must be verified against window geometry, then refreshed by the original accessibility object/frame identity. Numeric index reassignment, replaced objects, truncated scoped trees, unavailable window pid/units, and ambiguous or foreign scope fail.
+- Prior images: pass `state.screenshot.image` unchanged inside the same `run_script`. Its element association is immutable after later observations. Zoom result handles support nested rectangle/element crops with composed original-capture transforms; only fully contained elements survive rebasing. Standalone/foreign/expired handles fail. Retained enlargement cannot recover missing detail.
+- Fresh `target` windows never fall back to the desktop. `raise_window` defaults to false and requires an already focused visible window; true explicitly allows existing screenshot focus behavior.
+- Multiple windows: add a source per window, with each source's own reference geometry and regions.
+- A missing element does not discard valid rectangles in a mixed source. Known bounds/output-work errors are preflighted before requested focus. Partial failures/internal deadlines preserve labeled native images and per-region errors; client cancellation does not promise prior images. Scripts emit zoom failure feedback and stop before further input.
+- Output metadata records crop rectangles, dimensions, labels, factors, and transforms; never request encoded image strings.
+
+Fresh rectangle example:
+
+```json
+{"sources":[{"reference":{"width":960,"height":540,"coordinate_width":1920,"coordinate_height":1080},"regions":[{"label":"glyph","rect":{"x":20,"y":30,"width":80,"height":40}}]}]}
+```
+
+Fresh element example after `get_app_state({window_id: 123})`:
+
+```json
+{"sources":[{"target":{"window_id":123},"regions":[{"label":"button","element_index":7,"factor":2}]}]}
+```
+
+Prior-image rectangle and element example:
+
+```rhai
+let state = tools::invoke("get_app_state", #{window_id: 123});
+emit(tools::invoke("zoom", #{sources: [#{image: state.screenshot.image, regions: [
+  #{label: "glyph", rect: #{x: 20, y: 30, width: 80, height: 40}},
+  #{label: "button", element_index: 7}
+]}]}));
+```
+
+Output bounds: 4096 width/height, 16 Mi pixels per crop, 4 MiB total PNG bytes and 64 Mi cumulative output-work pixels.
+Source bounds: 16 MiB encoded bytes each, 32 MiB cumulative encoded sources, 64 Mi cumulative source pixels including duplicates, 256 MiB decoded allocation per source. Input plus fresh crop can hold up to 512 MiB uncompressed buffers; streaming PNG uses bounded rows/chunks rather than a full enlarged buffer.
+Source acquisition/decode deadline: 12 seconds; overall deadline: 45 seconds. Script deadlines/cancellation still apply. One leased worker runs pixel/file work off the async runtime and checks cancellation between bounded stages/rows/chunks; concurrent zoom requests are refused. Library decoding and regular-file I/O can finish their bounded stage after cancellation, while holding the lease.
+Pi returns up to 16 native images within 2 MiB total. Omitted references are marked with label/source, and surviving crops have request-unique adjacent captions and explicit image ordinals/original indexing. Request fewer/smaller crops after omission notices. Script retention also caps image metadata/associations at 4 MiB.

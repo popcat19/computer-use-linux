@@ -6,6 +6,7 @@ const requiredFiles = [
 	"pi/extension/index.ts",
 	"pi/extension/generated-tools.ts",
 	"pi/extension/mcp-client.bundle.cjs",
+	"pi/extension/mcp-output.ts",
 	"pi/extension/THIRD_PARTY_NOTICES.txt",
 ];
 const maxUnpackedBytes = 750_000;

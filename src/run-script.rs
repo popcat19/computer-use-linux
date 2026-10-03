@@ -288,6 +288,7 @@ fn evaluate(
                     || result.get("isError") == Some(&Value::Bool(true))
                 {
                     if name == "get_app_state"
+                        || name == "zoom"
                         || (name == "act_and_observe" && result.get("feedback").is_some())
                     {
                         let mut state = call_state.lock().unwrap();
