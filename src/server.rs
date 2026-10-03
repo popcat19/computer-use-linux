@@ -5732,14 +5732,13 @@ mod tests {
 
     #[tokio::test]
     async fn completion_notification_handles_missing_and_failed_backends() {
-        for path in ["/nonexistent/computer-use-notify", "/bin/false"] {
+        for path in ["/nonexistent/computer-use-notify", "false"] {
             let result =
                 send_completion_notification(Path::new(path), Duration::from_secs(2)).await;
             assert!(result.ok);
             assert_eq!(result.cue, "skipped");
         }
-        let result =
-            send_completion_notification(Path::new("/bin/true"), Duration::from_secs(2)).await;
+        let result = send_completion_notification(Path::new("true"), Duration::from_secs(2)).await;
         assert_eq!(result.cue, "notification");
     }
 
