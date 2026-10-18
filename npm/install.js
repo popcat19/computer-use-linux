@@ -113,6 +113,11 @@ async function main() {
     return;
   }
 
+  if (process.env.TERMUX_VERSION || process.env.PREFIX?.endsWith('/com.termux/files/usr')) {
+    console.log('[computer-use-linux] skipping desktop binary install on Termux');
+    return;
+  }
+
   if (process.platform !== 'linux') {
     fail(`unsupported platform: ${process.platform}. This package only supports Linux.`);
   }

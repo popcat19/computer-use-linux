@@ -72,6 +72,16 @@ test('missing source artifact fails installation without partial copying or down
   assert.deepEqual(calls.downloads, []);
 });
 
+test('Termux skips unsupported desktop binary installation', async () => {
+  for (const env of [{ TERMUX_VERSION: '0.118.0' }, { PREFIX: '/data/data/com.termux/files/usr' }]) {
+    const calls = await runInstaller({ env });
+    assert.deepEqual(calls.builds, []);
+    assert.deepEqual(calls.downloads, []);
+    assert.deepEqual(calls.copies, []);
+    assert.deepEqual(calls.failures, []);
+  }
+});
+
 test('explicit local binary and skip overrides retain precedence over source build', async () => {
   for (const env of [{ COMPUTER_USE_LINUX_SKIP_DOWNLOAD: '1' }, { COMPUTER_USE_LINUX_LOCAL_BINARY: '/explicit/binary' }]) {
     const calls = await runInstaller({ env });
