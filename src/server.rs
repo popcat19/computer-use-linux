@@ -915,6 +915,23 @@ impl ComputerUseLinux {
         .flatten()
     }
 
+    /// Move the pointer through the absolute uinput device without clicking.
+    /// Returns `None` to fall through when the device is unavailable.
+    async fn try_abs_move(&self, x: i32, y: i32) -> Option<crate::abs_pointer::PointerLanding> {
+        if !self.ensure_abs_pointer().await {
+            return None;
+        }
+        let abs_pointer = Arc::clone(&self.abs_pointer);
+        tokio::task::spawn_blocking(move || {
+            let mut guard = abs_pointer.lock().ok()?;
+            let pointer = guard.as_mut()?;
+            pointer.move_to(x, y).ok()
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
     #[tool(
         name = "click",
         description = "Click an element by index, semantic selector, or desktop coordinate pixels from screenshot metadata. Plain left activation prefers a native AT-SPI click/press/toggle action, avoiding toolkit coordinate scaling. Entry activate and slider jump actions are not substituted for pointer clicks. Explicit coordinates, right clicks, and multi-clicks retain pointer semantics.",
@@ -1559,9 +1576,20 @@ impl ComputerUseLinux {
                 });
             }
         };
+        // Position with the absolute uinput pointer (screenshot pixel space,
+        // same as click). ydotool's `--absolute` is pin-to-corner plus relative
+        // motion in compositor space, which misses whenever the layout origin
+        // is not 0,0 (e.g. a monitor above the primary). ydotool still sends
+        // the wheel because the absolute device exposes no REL axes.
         let mut sequence = Vec::new();
+        let mut abs_landing = None;
         if let Some((x, y)) = target_point {
-            sequence.push(absolute_mousemove_args(x, y));
+            abs_landing = self.try_abs_move(x, y).await;
+            if abs_landing.is_some() {
+                tokio::time::sleep(Duration::from_millis(40)).await;
+            } else {
+                sequence.push(absolute_mousemove_args(x, y));
+            }
         }
         sequence.push(wheel_mousemove_args(dx, dy));
         let (input_guard, result) = run_cancellation_safe_input(input_guard, async move {
@@ -1569,9 +1597,17 @@ impl ComputerUseLinux {
         })
         .await;
         let _input_guard = input_guard;
+        let mut output = action_result("scroll", result, received);
+        if output.ok && abs_landing.is_some() {
+            output.message =
+                "Pointer positioned through the uinput absolute pointer; wheel sent through ydotool."
+                    .to_string();
+        }
         Json(with_notes(
-            action_result("scroll", result, received),
-            off_screen_note,
+            output,
+            off_screen_note
+                .into_iter()
+                .chain(abs_landing.and_then(abs_pointer_clamp_note)),
         ))
     }
 

@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `scroll` on the ydotool fallback path now positions the pointer through
+  the uinput absolute pointer, the same screenshot-pixel space `click` uses.
+  ydotool's `--absolute` moves in compositor space, so on layouts whose origin
+  is not 0,0 (for example a monitor placed above the primary) the wheel landed
+  on the wrong window or monitor while the tool still reported success.
+- `run_script` registers bounded string helpers (`contains`, `starts_with`,
+  `ends_with`, `index_of`, `len`, `to_lower`, `to_upper`). Filters such as
+  `n.role.contains("menu")` used to fail with `Function not found`.
 - The unscoped-tree warning from `get_app_state` no longer tells a caller that
   already passed a `pid` or window target to pass a target. When the target
   matched no AT-SPI application root, the warning now points at the app's

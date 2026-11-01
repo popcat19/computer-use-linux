@@ -173,6 +173,30 @@ where
     }
 }
 
+/// Register linear-time string helpers. The full string packages stay excluded
+/// because padding and repetition run native loops that progress checks cannot
+/// interrupt; these helpers are bounded by `set_max_string_size`.
+fn register_string_helpers(engine: &mut Engine) {
+    engine.register_fn("contains", |s: ImmutableString, needle: ImmutableString| {
+        s.contains(needle.as_str())
+    });
+    engine.register_fn(
+        "starts_with",
+        |s: ImmutableString, prefix: ImmutableString| s.starts_with(prefix.as_str()),
+    );
+    engine.register_fn(
+        "ends_with",
+        |s: ImmutableString, suffix: ImmutableString| s.ends_with(suffix.as_str()),
+    );
+    engine.register_fn("index_of", |s: ImmutableString, needle: ImmutableString| {
+        s.find(needle.as_str())
+            .map_or(-1, |byte| s[..byte].chars().count() as rhai::INT)
+    });
+    engine.register_fn("len", |s: ImmutableString| s.chars().count() as rhai::INT);
+    engine.register_fn("to_lower", |s: ImmutableString| s.to_lowercase());
+    engine.register_fn("to_upper", |s: ImmutableString| s.to_uppercase());
+}
+
 fn evaluate(
     code: String,
     max_calls: u32,
@@ -209,6 +233,8 @@ fn evaluate(
             .or_else(|| progress_state.lock().unwrap().error.clone())
             .map(Dynamic::from)
     });
+
+    register_string_helpers(&mut engine);
 
     let wait_state = state.clone();
     let wait_cancelled = cancelled.clone();
@@ -425,6 +451,34 @@ mod tests {
         let output = run(r#"tools::invoke("list_windows", #{});"#).await;
         assert_eq!(output.error, None);
         assert!(output.outputs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn string_helpers_filter_tree_text() {
+        let output = run(r#"
+            let role = "menu item";
+            emit(role.contains("menu"));
+            emit(role.starts_with("menu"));
+            emit(role.ends_with("item"));
+            emit("Zené Tab".index_of("Tab"));
+            emit("Zené".len());
+            emit("ZEN".to_lower());
+            emit(["showing", "visible"].contains("showing"));
+        "#)
+        .await;
+        assert_eq!(output.error, None);
+        assert_eq!(
+            output.outputs,
+            vec![
+                json!(true),
+                json!(true),
+                json!(true),
+                json!(5),
+                json!(4),
+                json!("zen"),
+                json!(true)
+            ]
+        );
     }
 
     #[tokio::test]
